@@ -1,0 +1,22 @@
+services:
+  censor-image:
+    build: .
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+    environment:
+      MAX_UPLOAD_MB: "20"
+      STRICT_LOSSLESS: "true"
+      ALLOW_LOSSY_JPEG: "true"
+      MASK_MAX_SIDE: "640"
+      SKIN_BACKEND: "onnx_smp"
+      SKIN_MODEL_PATH: "models/skin_smp.onnx"
+      SKIN_SCORE_THRESHOLD: "0.5"
+      SKIN_CHANNEL_INDEX: "0"
+      SKIN_REQUIRE_MAX: "true"
+      SKIN_MARGIN: "0.05"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
