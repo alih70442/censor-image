@@ -11,7 +11,7 @@ from PIL import Image, ImageColor, ImageOps
 
 from app.censor import CensorParams, apply_censor
 from app.settings import settings
-from app.skin import skin_mask_dispatch
+from app.skin import skin_hair_masks_onnx_smp, skin_mask_dispatch
 
 app = FastAPI(title="Censor Image", version="0.1.0")
 
@@ -174,6 +174,7 @@ def censor(
     pixel_size: int = 18,
     color: str = "#000000",
     feather: float = 6.0,
+    hair: bool | None = None,
     image: UploadFile = File(...),
 ) -> Response:
     data = _read_upload_bytes(image)
@@ -188,20 +189,56 @@ def censor(
         raise HTTPException(status_code=400, detail=f"Invalid color: {color}") from exc
 
     rgb, alpha = _pil_to_rgb_array(img)
-    mask01 = skin_mask_dispatch(
-        rgb,
-        backend=settings.skin_backend,
-        model_path=settings.skin_model_path,
-        score_threshold=settings.skin_score_threshold,
-        skin_channel_index=settings.skin_channel_index,
-        require_max=settings.skin_require_max,
-        margin=settings.skin_margin,
-        min_area=settings.min_component_area,
-        cv_max_side=settings.mask_max_side,
-        cv_mode=settings.skin_mode,
-        cv_maha_threshold=settings.skin_maha_threshold,
-        cv_min_seed_pixels=settings.skin_min_seed_pixels,
-    )
+    use_hair = settings.censor_hair if hair is None else bool(hair)
+
+    if use_hair and settings.skin_backend == "onnx_smp":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_smp(
+                rgb,
+                model_path=settings.skin_model_path,
+                skin_score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                skin_require_max=settings.skin_require_max,
+                skin_margin=settings.skin_margin,
+                skin_min_area=settings.min_component_area,
+                hair_score_threshold=settings.hair_score_threshold,
+                hair_channel_index=settings.hair_channel_index,
+                hair_require_max=settings.hair_require_max,
+                hair_margin=settings.hair_margin,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+        except Exception:
+            skin01 = skin_mask_dispatch(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            mask01 = skin01
+    else:
+        mask01 = skin_mask_dispatch(
+            rgb,
+            backend=settings.skin_backend,
+            model_path=settings.skin_model_path,
+            score_threshold=settings.skin_score_threshold,
+            skin_channel_index=settings.skin_channel_index,
+            require_max=settings.skin_require_max,
+            margin=settings.skin_margin,
+            min_area=settings.min_component_area,
+            cv_max_side=settings.mask_max_side,
+            cv_mode=settings.skin_mode,
+            cv_maha_threshold=settings.skin_maha_threshold,
+            cv_min_seed_pixels=settings.skin_min_seed_pixels,
+        )
 
     params = CensorParams(
         method=method,

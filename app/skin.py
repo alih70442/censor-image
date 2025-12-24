@@ -300,37 +300,7 @@ def _softmax_channel_first(logits: np.ndarray) -> np.ndarray:
     return exp / np.sum(exp, axis=0, keepdims=True)
 
 
-@lru_cache(maxsize=4)
-def _get_onnx_session(model_path: str):
-    try:
-        import onnxruntime as ort
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError("onnxruntime is not installed") from exc
-
-    sess_options = ort.SessionOptions()
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    return ort.InferenceSession(model_path, sess_options=sess_options, providers=["CPUExecutionProvider"])
-
-
-def skin_mask_onnx_smp(
-    rgb: np.ndarray,
-    *,
-    model_path: str,
-    score_threshold: float,
-    skin_channel_index: int,
-    require_max: bool = True,
-    margin: float = 0.05,
-    min_area: int,
-) -> np.ndarray:
-    """
-    ONNX skin/clothes/hair segmentation from:
-      Kazuhito00/Skin-Clothes-Hair-Segmentation-using-SMP
-
-    Output is a float32 mask in [0, 1] (1 indicates skin).
-    """
-    if rgb.dtype != np.uint8:
-        raise ValueError("rgb must be uint8")
-
+def _smp_infer_logits(rgb: np.ndarray, *, model_path: str) -> tuple[np.ndarray, int, int]:
     session = _get_onnx_session(model_path)
     input_meta = session.get_inputs()[0]
     input_name = input_meta.name
@@ -360,24 +330,66 @@ def skin_mask_onnx_smp(
     if out.ndim != 3:
         raise RuntimeError(f"Unexpected model output shape: {out.shape}")
 
-    channels = out.shape[0]
-    if not (0 <= skin_channel_index < channels):
-        raise ValueError(f"skin_channel_index out of range: {skin_channel_index} for channels={channels}")
+    return out, target_h, target_w
 
-    # Prefer softmax for mutually-exclusive classes; if model already outputs probabilities,
-    # softmax still yields reasonable ordering.
-    probs = _softmax_channel_first(out)
-    skin = probs[skin_channel_index]
-    other = np.max(np.delete(probs, skin_channel_index, axis=0), axis=0) if probs.shape[0] > 1 else np.zeros_like(skin)
 
-    mask = skin > float(score_threshold)
-    if float(margin) > 0:
-        mask &= (skin - other) > float(margin)
-    if require_max and probs.shape[0] > 1:
-        mask &= skin == np.max(probs, axis=0)
+def _smp_class_mask_from_probs(
+    probs: np.ndarray,
+    *,
+    channel_index: int,
+    score_threshold: float,
+    require_max: bool,
+    margin: float,
+    min_area: int,
+) -> np.ndarray:
+    channels = probs.shape[0]
+    if not (0 <= int(channel_index) < int(channels)):
+        raise ValueError(f"channel_index out of range: {channel_index} for channels={channels}")
+
+    channel_index = int(channel_index)
+    score_threshold = float(score_threshold)
+    margin = float(margin)
+
+    cls = probs[channel_index]
+    other = np.max(np.delete(probs, channel_index, axis=0), axis=0) if channels > 1 else np.zeros_like(cls)
+
+    mask = cls > score_threshold
+    if margin > 0:
+        mask &= (cls - other) > margin
+    if require_max and channels > 1:
+        mask &= cls == np.max(probs, axis=0)
 
     mask01 = mask.astype(np.float32)
-    mask01 = _postprocess_mask(mask01, min_area=min_area)
+    return _postprocess_mask(mask01, min_area=min_area)
+
+
+def class_mask_onnx_smp(
+    rgb: np.ndarray,
+    *,
+    model_path: str,
+    score_threshold: float,
+    channel_index: int,
+    require_max: bool = True,
+    margin: float = 0.05,
+    min_area: int,
+) -> np.ndarray:
+    """
+    Generic ONNX mask extractor for the SMP skin/clothes/hair model.
+    Returns a float32 mask in [0, 1] for the requested output channel.
+    """
+    if rgb.dtype != np.uint8:
+        raise ValueError("rgb must be uint8")
+
+    logits, target_h, target_w = _smp_infer_logits(rgb, model_path=model_path)
+    probs = _softmax_channel_first(logits)
+    mask01 = _smp_class_mask_from_probs(
+        probs,
+        channel_index=channel_index,
+        score_threshold=score_threshold,
+        require_max=require_max,
+        margin=margin,
+        min_area=min_area,
+    )
 
     height, width = rgb.shape[:2]
     if (target_h, target_w) != (height, width):
@@ -385,6 +397,97 @@ def skin_mask_onnx_smp(
         mask01 = np.clip(mask01, 0.0, 1.0).astype(np.float32)
 
     return mask01
+
+
+def skin_hair_masks_onnx_smp(
+    rgb: np.ndarray,
+    *,
+    model_path: str,
+    skin_score_threshold: float,
+    skin_channel_index: int,
+    skin_require_max: bool,
+    skin_margin: float,
+    skin_min_area: int,
+    hair_score_threshold: float,
+    hair_channel_index: int,
+    hair_require_max: bool,
+    hair_margin: float,
+    hair_min_area: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    One-pass ONNX inference to get both skin + hair masks from the SMP model.
+    Returns two float32 masks in [0, 1] (skin_mask01, hair_mask01).
+    """
+    if rgb.dtype != np.uint8:
+        raise ValueError("rgb must be uint8")
+
+    logits, target_h, target_w = _smp_infer_logits(rgb, model_path=model_path)
+    probs = _softmax_channel_first(logits)
+
+    skin01 = _smp_class_mask_from_probs(
+        probs,
+        channel_index=skin_channel_index,
+        score_threshold=skin_score_threshold,
+        require_max=skin_require_max,
+        margin=skin_margin,
+        min_area=skin_min_area,
+    )
+    hair01 = _smp_class_mask_from_probs(
+        probs,
+        channel_index=hair_channel_index,
+        score_threshold=hair_score_threshold,
+        require_max=hair_require_max,
+        margin=hair_margin,
+        min_area=hair_min_area,
+    )
+
+    height, width = rgb.shape[:2]
+    if (target_h, target_w) != (height, width):
+        skin01 = cv2.resize(skin01, (width, height), interpolation=cv2.INTER_LINEAR)
+        hair01 = cv2.resize(hair01, (width, height), interpolation=cv2.INTER_LINEAR)
+        skin01 = np.clip(skin01, 0.0, 1.0).astype(np.float32)
+        hair01 = np.clip(hair01, 0.0, 1.0).astype(np.float32)
+
+    return skin01, hair01
+
+
+@lru_cache(maxsize=4)
+def _get_onnx_session(model_path: str):
+    try:
+        import onnxruntime as ort
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("onnxruntime is not installed") from exc
+
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    return ort.InferenceSession(model_path, sess_options=sess_options, providers=["CPUExecutionProvider"])
+
+
+def skin_mask_onnx_smp(
+    rgb: np.ndarray,
+    *,
+    model_path: str,
+    score_threshold: float,
+    skin_channel_index: int,
+    require_max: bool = True,
+    margin: float = 0.05,
+    min_area: int,
+) -> np.ndarray:
+    """
+    ONNX skin/clothes/hair segmentation from:
+      Kazuhito00/Skin-Clothes-Hair-Segmentation-using-SMP
+
+    Output is a float32 mask in [0, 1] (1 indicates skin).
+    """
+    return class_mask_onnx_smp(
+        rgb,
+        model_path=model_path,
+        score_threshold=score_threshold,
+        channel_index=skin_channel_index,
+        require_max=require_max,
+        margin=margin,
+        min_area=min_area,
+    )
 
 
 def skin_mask_dispatch(

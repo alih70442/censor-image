@@ -33,6 +33,14 @@ By default the Docker image bundles an offline ONNX model for skin/clothes/hair 
 - `SKIN_REQUIRE_MAX=true` (only keep pixels where “skin” is the top class)
 - `SKIN_MARGIN=0.05` (require `skin_prob - max(other_probs)` to exceed this)
 
+Optional: also censor hair (ONNX backend only):
+
+- `CENSOR_HAIR=true` to enable by default (or pass `hair=true` to `POST /censor`)
+- `HAIR_CHANNEL_INDEX=2` (model output channel for “hair”)
+- `HAIR_SCORE_THRESHOLD=0.5`
+- `HAIR_REQUIRE_MAX=true`
+- `HAIR_MARGIN=0.05`
+
 If you need a fully local build without downloading during `docker build`, set `SKIN_BACKEND=cv` and rebuild (lower quality).
 
 CV fallback (used when `SKIN_BACKEND=cv` or ONNX fails):
@@ -63,7 +71,7 @@ If skin detection is too aggressive (censors clothing), reduce expansion:
 Blur (PNG/JPEG/WebP input):
 
 ```bash
-curl -sS -X POST "http://localhost:8002/censor?method=blur&sigma=12&feather=6" \
+curl -sS -X POST "http://localhost:8002/censor?method=blur&sigma=12&feather=6&hair=true" \
   -F "image=@input.png" \
   -o out.png
 ```

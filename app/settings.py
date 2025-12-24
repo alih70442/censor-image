@@ -26,6 +26,14 @@ class Settings:
     skin_require_max: bool = _get_bool("SKIN_REQUIRE_MAX", True)
     skin_margin: float = float(os.getenv("SKIN_MARGIN", "0.05"))
 
+    # Optional: also censor hair (only supported with the onnx_smp backend).
+    censor_hair: bool = _get_bool("CENSOR_HAIR", False)
+    hair_score_threshold: float = float(os.getenv("HAIR_SCORE_THRESHOLD", "0.5"))
+    hair_channel_index: int = int(os.getenv("HAIR_CHANNEL_INDEX", "2"))
+    hair_require_max: bool = _get_bool("HAIR_REQUIRE_MAX", True)
+    hair_margin: float = float(os.getenv("HAIR_MARGIN", "0.05"))
+    hair_min_component_area: int = int(os.getenv("HAIR_MIN_COMPONENT_AREA", "128"))
+
     # CV fallback knobs (used only when SKIN_BACKEND=cv)
     skin_mode: str = os.getenv("SKIN_MODE", "auto").strip().lower()  # "auto" | "adaptive" | "heuristic"
     skin_maha_threshold: float = float(os.getenv("SKIN_MAHA_THRESHOLD", "3.5"))
