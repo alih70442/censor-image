@@ -1,3 +1,4 @@
 .tmp/
 models/*.onnx
 models/*.tar.gz
+.env

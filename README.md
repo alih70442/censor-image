@@ -11,6 +11,11 @@ docker run --rm -p 8002:8000 \
   censor-image
 ```
 
+If you prefer a `.env` file, copy `.env.example` → `.env` and run with either:
+
+- `docker compose up --build` (loads `.env` via `env_file` in `docker-compose.yml`), or
+- `uvicorn app.main:app --env-file .env` (when running locally outside Docker)
+
 Health check:
 
 ```bash
