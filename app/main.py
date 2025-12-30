@@ -11,7 +11,7 @@ from PIL import Image, ImageColor, ImageOps
 
 from app.censor import CensorParams, apply_censor
 from app.settings import settings
-from app.skin import skin_hair_masks_onnx_smp, skin_mask_dispatch
+from app.skin import skin_hair_masks_onnx_smp, skin_mask_dispatch_info
 
 app = FastAPI(title="Censor Image", version="0.1.0")
 
@@ -146,7 +146,7 @@ def mask(
     _ensure_supported(fmt)
 
     rgb, _alpha = _pil_to_rgb_array(img)
-    mask01 = skin_mask_dispatch(
+    mask01, used_backend, backend_error = skin_mask_dispatch_info(
         rgb,
         backend=settings.skin_backend,
         model_path=settings.skin_model_path,
@@ -155,6 +155,10 @@ def mask(
         require_max=settings.skin_require_max,
         margin=settings.skin_margin,
         min_area=settings.min_component_area,
+        schp_model_path=settings.schp_model_path,
+        schp_input_size=settings.schp_input_size,
+        schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+        schp_min_confidence=settings.schp_min_confidence,
         cv_max_side=settings.mask_max_side,
         cv_mode=settings.skin_mode,
         cv_maha_threshold=settings.skin_maha_threshold,
@@ -164,7 +168,15 @@ def mask(
     mask_img = Image.fromarray(mask_u8, mode="L")
     out = io.BytesIO()
     mask_img.save(out, format="PNG", optimize=False)
-    return Response(content=out.getvalue(), media_type="image/png")
+    headers = {
+        "X-Skin-Backend-Requested": settings.skin_backend,
+        "X-Skin-Backend-Used": used_backend,
+    }
+    if backend_error:
+        safe = " ".join(str(backend_error).splitlines()).strip()
+        safe = safe.encode("ascii", "replace").decode("ascii")
+        headers["X-Skin-Backend-Error"] = safe[:800]
+    return Response(content=out.getvalue(), media_type="image/png", headers=headers)
 
 
 @app.post("/censor")
@@ -190,6 +202,7 @@ def censor(
 
     rgb, alpha = _pil_to_rgb_array(img)
     use_hair = settings.censor_hair if hair is None else bool(hair)
+    used_backend: str
 
     if use_hair and settings.skin_backend == "onnx_smp":
         try:
@@ -208,8 +221,10 @@ def censor(
                 hair_min_area=settings.hair_min_component_area,
             )
             mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_smp"
+            backend_error = None
         except Exception:
-            skin01 = skin_mask_dispatch(
+            skin01, used_backend, backend_error = skin_mask_dispatch_info(
                 rgb,
                 backend=settings.skin_backend,
                 model_path=settings.skin_model_path,
@@ -218,6 +233,10 @@ def censor(
                 require_max=settings.skin_require_max,
                 margin=settings.skin_margin,
                 min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
                 cv_max_side=settings.mask_max_side,
                 cv_mode=settings.skin_mode,
                 cv_maha_threshold=settings.skin_maha_threshold,
@@ -225,7 +244,7 @@ def censor(
             )
             mask01 = skin01
     else:
-        mask01 = skin_mask_dispatch(
+        mask01, used_backend, backend_error = skin_mask_dispatch_info(
             rgb,
             backend=settings.skin_backend,
             model_path=settings.skin_model_path,
@@ -234,6 +253,10 @@ def censor(
             require_max=settings.skin_require_max,
             margin=settings.skin_margin,
             min_area=settings.min_component_area,
+            schp_model_path=settings.schp_model_path,
+            schp_input_size=settings.schp_input_size,
+            schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+            schp_min_confidence=settings.schp_min_confidence,
             cv_max_side=settings.mask_max_side,
             cv_mode=settings.skin_mode,
             cv_maha_threshold=settings.skin_maha_threshold,
@@ -251,4 +274,12 @@ def censor(
     out_img = _compose_with_alpha(out_rgb, alpha)
     out_bytes = _encode_image(out_img, fmt)
 
-    return Response(content=out_bytes, media_type=_content_type_for(fmt))
+    headers = {
+        "X-Skin-Backend-Requested": settings.skin_backend,
+        "X-Skin-Backend-Used": used_backend,
+    }
+    if backend_error:
+        safe = " ".join(str(backend_error).splitlines()).strip()
+        safe = safe.encode("ascii", "replace").decode("ascii")
+        headers["X-Skin-Backend-Error"] = safe[:800]
+    return Response(content=out_bytes, media_type=_content_type_for(fmt), headers=headers)

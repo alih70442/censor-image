@@ -24,7 +24,15 @@ curl -sS http://localhost:8002/healthz
 
 ## Tuning
 
-By default the Docker image bundles an offline ONNX model for skin/clothes/hair segmentation at build time, and uses it at runtime:
+If you place a human-parsing ONNX model at `models/schp.onnx`, the app will prefer it automatically (best separation of skin vs skin-colored clothing):
+
+- `SKIN_BACKEND=onnx_schp`
+- `SCHP_MODEL_PATH=models/schp.onnx` (default)
+- `SCHP_INPUT_SIZE=473`
+- `SCHP_SKIN_CLASS_IDS=13,14,15,16,17` (default assumes LIP labels: face/arms/legs)
+- `SCHP_MIN_CONFIDENCE=0.0`
+
+Otherwise, the Docker image bundles an offline ONNX model for skin/clothes/hair segmentation at build time and uses it at runtime:
 
 - `SKIN_BACKEND=onnx_smp` (default)
 - `SKIN_MODEL_PATH=models/skin_smp.onnx` (default)
@@ -58,6 +66,7 @@ If skin detection is too aggressive (censors clothing), reduce expansion:
 
 - If you get `Missing boundary in multipart`, don’t manually set `Content-Type`; let your HTTP client set it for `multipart/form-data`.
 - If `POST /mask` looks wrong, try adjusting `SKIN_SCORE_THRESHOLD` (lower = more skin) or `SKIN_MARGIN` (higher = less clothing false positives).
+- If skin-colored clothing is being censored, use the `onnx_schp` backend with a human-parsing model (it builds the mask from body-part classes instead of color/texture).
 
 ## Endpoints
 
@@ -65,6 +74,14 @@ If skin detection is too aggressive (censors clothing), reduce expansion:
 - `GET /healthz`
 - `POST /censor` → returns the censored image (same dimensions; same format when possible)
 - `POST /mask` → returns a PNG mask (debug)
+
+Both `POST /mask` and `POST /censor` include:
+
+- `X-Skin-Backend-Requested`: configured backend (e.g. `onnx_schp`)
+- `X-Skin-Backend-Used`: backend actually used after fallback (e.g. `onnx_smp`, `cv`)
+- `X-Skin-Backend-Error`: reason for fallback (only present when a fallback happened)
+
+For `onnx_schp`, the server auto-detects the model’s fixed input resolution from the ONNX graph (e.g. 512×512) and will resize accordingly.
 
 ## Examples
 
