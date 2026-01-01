@@ -22,3 +22,23 @@ in that repo (once) and then copy the resulting `.onnx` here. The ONNX model sho
 The Docker image downloads `skin_smp.onnx` during `docker build` by default, unless you provide it yourself at:
 
 - `models/skin_smp.onnx`
+
+### `onnx_segformer24` (human parsing)
+
+Place a SegFormer human-parsing ONNX model at:
+
+- `models/model.onnx` (or set `SEGFORMER24_MODEL_PATH`)
+
+This backend is meant for models like `yolo12138/segformer-b2-human-parse-24` and builds a binary mask by selecting
+configured semantic class IDs for "skin parts" plus (optionally) hair.
+
+### `onnx_lvmhpv2` (human parsing)
+
+If you have an ONNX human-parsing model trained on the LV-MHP v2 label set, you can use it via:
+
+- `SKIN_BACKEND=onnx_lvmhpv2`
+- `LVMHP_MODEL_PATH=models/lvmhp_v2.onnx` (or any path)
+- `LVMHP_PREPROCESS=rgb_imagenet` (or `schp_bgr_imagenet`, depending on your export)
+- `LVMHP_SKIN_CLASS_IDS=...` and optionally `LVMHP_HAIR_CLASS_IDS=...`
+
+This backend is label-set agnostic: you must configure the label IDs that correspond to exposed skin/hair for your model.

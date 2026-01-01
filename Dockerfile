@@ -21,6 +21,11 @@ RUN if [ -n "${SCHP_MODEL_URL}" ] && [ ! -f /app/models/schp.onnx ]; then \
       curl -L --fail -o /app/models/schp.onnx "${SCHP_MODEL_URL}"; \
     fi
 
+ARG LVMHP_MODEL_URL=""
+RUN if [ -n "${LVMHP_MODEL_URL}" ] && [ ! -f /app/models/lvmhp_v2.onnx ]; then \
+      curl -L --fail -o /app/models/lvmhp_v2.onnx "${LVMHP_MODEL_URL}"; \
+    fi
+
 ARG SKIN_SMP_MODEL_URL="https://raw.githubusercontent.com/Kazuhito00/Skin-Clothes-Hair-Segmentation-using-SMP/main/02.model/DeepLabV3Plus(timm-mobilenetv3_large_100)_1366_4.71M_0.8606/best_model_simplifier.onnx"
 RUN if [ ! -f /app/models/skin_smp.onnx ]; then \
       curl -L --fail -o /app/models/skin_smp.onnx "${SKIN_SMP_MODEL_URL}"; \

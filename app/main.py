@@ -11,7 +11,14 @@ from PIL import Image, ImageColor, ImageOps
 
 from app.censor import CensorParams, apply_censor
 from app.settings import settings
-from app.skin import skin_hair_masks_onnx_smp, skin_mask_dispatch_info
+from app.skin import (
+    fused_mask_dispatch_info,
+    skin_hair_masks_onnx_lvmhpv2,
+    skin_hair_masks_onnx_schp,
+    skin_hair_masks_onnx_segformer24,
+    skin_hair_masks_onnx_smp,
+    skin_mask_dispatch_info,
+)
 
 app = FastAPI(title="Censor Image", version="0.1.0")
 
@@ -138,6 +145,7 @@ def healthz() -> dict[str, str]:
 
 @app.post("/mask")
 def mask(
+    hair: bool | None = None,
     image: UploadFile = File(...),
 ) -> Response:
     data = _read_upload_bytes(image)
@@ -146,24 +154,398 @@ def mask(
     _ensure_supported(fmt)
 
     rgb, _alpha = _pil_to_rgb_array(img)
-    mask01, used_backend, backend_error = skin_mask_dispatch_info(
-        rgb,
-        backend=settings.skin_backend,
-        model_path=settings.skin_model_path,
-        score_threshold=settings.skin_score_threshold,
-        skin_channel_index=settings.skin_channel_index,
-        require_max=settings.skin_require_max,
-        margin=settings.skin_margin,
-        min_area=settings.min_component_area,
-        schp_model_path=settings.schp_model_path,
-        schp_input_size=settings.schp_input_size,
-        schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
-        schp_min_confidence=settings.schp_min_confidence,
-        cv_max_side=settings.mask_max_side,
-        cv_mode=settings.skin_mode,
-        cv_maha_threshold=settings.skin_maha_threshold,
-        cv_min_seed_pixels=settings.skin_min_seed_pixels,
-    )
+    use_hair = settings.censor_hair if hair is None else bool(hair)
+    used_backends: tuple[str, ...] | None = None
+
+    if settings.mask_fusion_mode != "none" and settings.mask_fusion_backends:
+        try:
+            mask01, used_backends, backend_error = fused_mask_dispatch_info(
+                rgb,
+                mode=settings.mask_fusion_mode,
+                backends=tuple(settings.mask_fusion_backends),
+                use_hair=use_hair,
+                min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+                binarize_threshold=settings.mask_fusion_binarize_threshold,
+                overlap_dilate_px=settings.mask_fusion_overlap_dilate_px,
+                min_overlap_pixels=settings.mask_fusion_min_overlap_pixels,
+                min_overlap_frac=settings.mask_fusion_min_overlap_frac,
+                fusion_min_area=settings.mask_fusion_min_component_area,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                hair_score_threshold=settings.hair_score_threshold,
+                hair_channel_index=settings.hair_channel_index,
+                hair_require_max=settings.hair_require_max,
+                hair_margin=settings.hair_margin,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_hair_class_ids=tuple(settings.schp_hair_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_hair_class_ids=tuple(settings.segformer24_hair_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_hair_class_ids=tuple(settings.lvmhp_hair_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+            )
+            used_backend = f"fusion_{settings.mask_fusion_mode}"
+        except Exception as exc:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+            segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+            segformer24_min_confidence=settings.segformer24_min_confidence,
+            lvmhp_model_path=settings.lvmhp_model_path,
+            lvmhp_preprocess=settings.lvmhp_preprocess,
+            lvmhp_input_size=settings.lvmhp_input_size,
+            lvmhp_output_index=settings.lvmhp_output_index,
+            lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+            lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+            lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+            lvmhp_max_instances=settings.lvmhp_max_instances,
+            lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+            lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+            lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+            lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+            lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+            lvmhp_min_confidence=settings.lvmhp_min_confidence,
+            cv_max_side=settings.mask_max_side,
+            cv_mode=settings.skin_mode,
+            cv_maha_threshold=settings.skin_maha_threshold,
+            cv_min_seed_pixels=settings.skin_min_seed_pixels,
+        )
+            backend_error = (
+                f"fusion failed: {type(exc).__name__}: {exc}; {backend_error}" if backend_error else str(exc)
+            )
+
+    elif use_hair and settings.skin_backend == "onnx_smp":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_smp(
+                rgb,
+                model_path=settings.skin_model_path,
+                skin_score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                skin_require_max=settings.skin_require_max,
+                skin_margin=settings.skin_margin,
+                skin_min_area=settings.min_component_area,
+                hair_score_threshold=settings.hair_score_threshold,
+                hair_channel_index=settings.hair_channel_index,
+                hair_require_max=settings.hair_require_max,
+                hair_margin=settings.hair_margin,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_smp"
+            backend_error = None
+        except Exception:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+    elif use_hair and settings.skin_backend == "onnx_schp":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_schp(
+                rgb,
+                model_path=settings.schp_model_path,
+                input_size=settings.schp_input_size,
+                skin_class_ids=tuple(settings.schp_skin_class_ids),
+                hair_class_ids=tuple(settings.schp_hair_class_ids),
+                min_confidence=settings.schp_min_confidence,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_schp"
+            backend_error = None
+        except Exception:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            if used_backend == "onnx_smp":
+                try:
+                    skin01b, hair01b = skin_hair_masks_onnx_smp(
+                        rgb,
+                        model_path=settings.skin_model_path,
+                        skin_score_threshold=settings.skin_score_threshold,
+                        skin_channel_index=settings.skin_channel_index,
+                        skin_require_max=settings.skin_require_max,
+                        skin_margin=settings.skin_margin,
+                        skin_min_area=settings.min_component_area,
+                        hair_score_threshold=settings.hair_score_threshold,
+                        hair_channel_index=settings.hair_channel_index,
+                        hair_require_max=settings.hair_require_max,
+                        hair_margin=settings.hair_margin,
+                        hair_min_area=settings.hair_min_component_area,
+                    )
+                    mask01 = np.maximum(skin01b, hair01b)
+                except Exception:
+                    pass
+    elif use_hair and settings.skin_backend == "onnx_segformer24":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_segformer24(
+                rgb,
+                model_path=settings.segformer24_model_path,
+                input_size=settings.segformer24_input_size,
+                skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                hair_class_ids=tuple(settings.segformer24_hair_class_ids),
+                face_class_ids=tuple(settings.segformer24_face_class_ids),
+                neck_from_face=settings.segformer24_neck_from_face,
+                neck_extend_frac=settings.segformer24_neck_extend_frac,
+                neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                min_confidence=settings.segformer24_min_confidence,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_segformer24"
+            backend_error = None
+        except Exception:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+    elif (
+        use_hair
+        and settings.skin_backend == "onnx_lvmhpv2"
+        and settings.lvmhp_hair_class_ids
+    ):
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_lvmhpv2(
+                rgb,
+                model_path=settings.lvmhp_model_path,
+                preprocess=settings.lvmhp_preprocess,
+                input_size=settings.lvmhp_input_size,
+                output_index=settings.lvmhp_output_index,
+                class_id_offset=settings.lvmhp_class_id_offset,
+                skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                hair_class_ids=tuple(settings.lvmhp_hair_class_ids),
+                face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                neck_from_face=settings.lvmhp_neck_from_face,
+                neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                min_confidence=settings.lvmhp_min_confidence,
+                cate_threshold=settings.lvmhp_cate_threshold,
+                mask_threshold=settings.lvmhp_mask_threshold,
+                max_instances=settings.lvmhp_max_instances,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_lvmhpv2"
+            backend_error = None
+        except Exception:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+    else:
+        mask01, used_backend, backend_error = skin_mask_dispatch_info(
+            rgb,
+            backend=settings.skin_backend,
+            model_path=settings.skin_model_path,
+            score_threshold=settings.skin_score_threshold,
+            skin_channel_index=settings.skin_channel_index,
+            require_max=settings.skin_require_max,
+            margin=settings.skin_margin,
+            min_area=settings.min_component_area,
+            schp_model_path=settings.schp_model_path,
+            schp_input_size=settings.schp_input_size,
+            schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+            schp_min_confidence=settings.schp_min_confidence,
+            segformer24_model_path=settings.segformer24_model_path,
+            segformer24_input_size=settings.segformer24_input_size,
+            segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+            segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+            segformer24_neck_from_face=settings.segformer24_neck_from_face,
+            segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+            segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+            segformer24_min_confidence=settings.segformer24_min_confidence,
+            lvmhp_model_path=settings.lvmhp_model_path,
+            lvmhp_preprocess=settings.lvmhp_preprocess,
+            lvmhp_input_size=settings.lvmhp_input_size,
+            lvmhp_output_index=settings.lvmhp_output_index,
+            lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+            lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+            lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+            lvmhp_max_instances=settings.lvmhp_max_instances,
+            lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+            lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+            lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+            lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+            lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+            lvmhp_min_confidence=settings.lvmhp_min_confidence,
+            cv_max_side=settings.mask_max_side,
+            cv_mode=settings.skin_mode,
+            cv_maha_threshold=settings.skin_maha_threshold,
+            cv_min_seed_pixels=settings.skin_min_seed_pixels,
+        )
     mask_u8 = (np.clip(mask01, 0.0, 1.0) * 255).astype(np.uint8)
     mask_img = Image.fromarray(mask_u8, mode="L")
     out = io.BytesIO()
@@ -172,6 +554,8 @@ def mask(
         "X-Skin-Backend-Requested": settings.skin_backend,
         "X-Skin-Backend-Used": used_backend,
     }
+    if used_backends:
+        headers["X-Skin-Backends-Used"] = ",".join(used_backends)
     if backend_error:
         safe = " ".join(str(backend_error).splitlines()).strip()
         safe = safe.encode("ascii", "replace").decode("ascii")
@@ -203,8 +587,107 @@ def censor(
     rgb, alpha = _pil_to_rgb_array(img)
     use_hair = settings.censor_hair if hair is None else bool(hair)
     used_backend: str
+    used_backends: tuple[str, ...] | None = None
 
-    if use_hair and settings.skin_backend == "onnx_smp":
+    if settings.mask_fusion_mode != "none" and settings.mask_fusion_backends:
+        try:
+            mask01, used_backends, backend_error = fused_mask_dispatch_info(
+                rgb,
+                mode=settings.mask_fusion_mode,
+                backends=tuple(settings.mask_fusion_backends),
+                use_hair=use_hair,
+                min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+                binarize_threshold=settings.mask_fusion_binarize_threshold,
+                overlap_dilate_px=settings.mask_fusion_overlap_dilate_px,
+                min_overlap_pixels=settings.mask_fusion_min_overlap_pixels,
+                min_overlap_frac=settings.mask_fusion_min_overlap_frac,
+                fusion_min_area=settings.mask_fusion_min_component_area,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                hair_score_threshold=settings.hair_score_threshold,
+                hair_channel_index=settings.hair_channel_index,
+                hair_require_max=settings.hair_require_max,
+                hair_margin=settings.hair_margin,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_hair_class_ids=tuple(settings.schp_hair_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_hair_class_ids=tuple(settings.segformer24_hair_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_hair_class_ids=tuple(settings.lvmhp_hair_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+            )
+            used_backend = f"fusion_{settings.mask_fusion_mode}"
+        except Exception as exc:
+            mask01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            backend_error = (
+                f"fusion failed: {type(exc).__name__}: {exc}; {backend_error}" if backend_error else str(exc)
+            )
+    elif use_hair and settings.skin_backend == "onnx_smp":
         try:
             skin01, hair01 = skin_hair_masks_onnx_smp(
                 rgb,
@@ -237,6 +720,212 @@ def censor(
                 schp_input_size=settings.schp_input_size,
                 schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
                 schp_min_confidence=settings.schp_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            mask01 = skin01
+    elif use_hair and settings.skin_backend == "onnx_schp":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_schp(
+                rgb,
+                model_path=settings.schp_model_path,
+                input_size=settings.schp_input_size,
+                skin_class_ids=tuple(settings.schp_skin_class_ids),
+                hair_class_ids=tuple(settings.schp_hair_class_ids),
+                min_confidence=settings.schp_min_confidence,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_schp"
+            backend_error = None
+        except Exception:
+            skin01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            mask01 = skin01
+            if used_backend == "onnx_smp":
+                try:
+                    skin01b, hair01b = skin_hair_masks_onnx_smp(
+                        rgb,
+                        model_path=settings.skin_model_path,
+                        skin_score_threshold=settings.skin_score_threshold,
+                        skin_channel_index=settings.skin_channel_index,
+                        skin_require_max=settings.skin_require_max,
+                        skin_margin=settings.skin_margin,
+                        skin_min_area=settings.min_component_area,
+                        hair_score_threshold=settings.hair_score_threshold,
+                        hair_channel_index=settings.hair_channel_index,
+                        hair_require_max=settings.hair_require_max,
+                        hair_margin=settings.hair_margin,
+                        hair_min_area=settings.hair_min_component_area,
+                    )
+                    mask01 = np.maximum(skin01b, hair01b)
+                except Exception:
+                    pass
+    elif use_hair and settings.skin_backend == "onnx_segformer24":
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_segformer24(
+                rgb,
+                model_path=settings.segformer24_model_path,
+                input_size=settings.segformer24_input_size,
+                skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                hair_class_ids=tuple(settings.segformer24_hair_class_ids),
+                face_class_ids=tuple(settings.segformer24_face_class_ids),
+                neck_from_face=settings.segformer24_neck_from_face,
+                neck_extend_frac=settings.segformer24_neck_extend_frac,
+                neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                min_confidence=settings.segformer24_min_confidence,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_segformer24"
+            backend_error = None
+        except Exception:
+            skin01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
+                cv_max_side=settings.mask_max_side,
+                cv_mode=settings.skin_mode,
+                cv_maha_threshold=settings.skin_maha_threshold,
+                cv_min_seed_pixels=settings.skin_min_seed_pixels,
+            )
+            mask01 = skin01
+    elif use_hair and settings.skin_backend == "onnx_lvmhpv2" and settings.lvmhp_hair_class_ids:
+        try:
+            skin01, hair01 = skin_hair_masks_onnx_lvmhpv2(
+                rgb,
+                model_path=settings.lvmhp_model_path,
+                preprocess=settings.lvmhp_preprocess,
+                input_size=settings.lvmhp_input_size,
+                output_index=settings.lvmhp_output_index,
+                class_id_offset=settings.lvmhp_class_id_offset,
+                skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                hair_class_ids=tuple(settings.lvmhp_hair_class_ids),
+                face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                neck_from_face=settings.lvmhp_neck_from_face,
+                neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                min_confidence=settings.lvmhp_min_confidence,
+                cate_threshold=settings.lvmhp_cate_threshold,
+                mask_threshold=settings.lvmhp_mask_threshold,
+                max_instances=settings.lvmhp_max_instances,
+                skin_min_area=settings.min_component_area,
+                hair_min_area=settings.hair_min_component_area,
+            )
+            mask01 = np.maximum(skin01, hair01)
+            used_backend = "onnx_lvmhpv2"
+            backend_error = None
+        except Exception:
+            skin01, used_backend, backend_error = skin_mask_dispatch_info(
+                rgb,
+                backend=settings.skin_backend,
+                model_path=settings.skin_model_path,
+                score_threshold=settings.skin_score_threshold,
+                skin_channel_index=settings.skin_channel_index,
+                require_max=settings.skin_require_max,
+                margin=settings.skin_margin,
+                min_area=settings.min_component_area,
+                schp_model_path=settings.schp_model_path,
+                schp_input_size=settings.schp_input_size,
+                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
+                schp_min_confidence=settings.schp_min_confidence,
+                segformer24_model_path=settings.segformer24_model_path,
+                segformer24_input_size=settings.segformer24_input_size,
+                segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+                segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+                segformer24_neck_from_face=settings.segformer24_neck_from_face,
+                segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+                segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+                segformer24_min_confidence=settings.segformer24_min_confidence,
+                lvmhp_model_path=settings.lvmhp_model_path,
+                lvmhp_preprocess=settings.lvmhp_preprocess,
+                lvmhp_input_size=settings.lvmhp_input_size,
+                lvmhp_output_index=settings.lvmhp_output_index,
+                lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+                lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+                lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+                lvmhp_max_instances=settings.lvmhp_max_instances,
+                lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+                lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+                lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+                lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+                lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+                lvmhp_min_confidence=settings.lvmhp_min_confidence,
                 cv_max_side=settings.mask_max_side,
                 cv_mode=settings.skin_mode,
                 cv_maha_threshold=settings.skin_maha_threshold,
@@ -257,6 +946,28 @@ def censor(
             schp_input_size=settings.schp_input_size,
             schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
             schp_min_confidence=settings.schp_min_confidence,
+            segformer24_model_path=settings.segformer24_model_path,
+            segformer24_input_size=settings.segformer24_input_size,
+            segformer24_skin_class_ids=tuple(settings.segformer24_skin_class_ids),
+            segformer24_face_class_ids=tuple(settings.segformer24_face_class_ids),
+            segformer24_neck_from_face=settings.segformer24_neck_from_face,
+            segformer24_neck_extend_frac=settings.segformer24_neck_extend_frac,
+            segformer24_neck_expand_x_frac=settings.segformer24_neck_expand_x_frac,
+            segformer24_min_confidence=settings.segformer24_min_confidence,
+            lvmhp_model_path=settings.lvmhp_model_path,
+            lvmhp_preprocess=settings.lvmhp_preprocess,
+            lvmhp_input_size=settings.lvmhp_input_size,
+            lvmhp_output_index=settings.lvmhp_output_index,
+            lvmhp_class_id_offset=settings.lvmhp_class_id_offset,
+            lvmhp_cate_threshold=settings.lvmhp_cate_threshold,
+            lvmhp_mask_threshold=settings.lvmhp_mask_threshold,
+            lvmhp_max_instances=settings.lvmhp_max_instances,
+            lvmhp_skin_class_ids=tuple(settings.lvmhp_skin_class_ids),
+            lvmhp_face_class_ids=tuple(settings.lvmhp_face_class_ids),
+            lvmhp_neck_from_face=settings.lvmhp_neck_from_face,
+            lvmhp_neck_extend_frac=settings.lvmhp_neck_extend_frac,
+            lvmhp_neck_expand_x_frac=settings.lvmhp_neck_expand_x_frac,
+            lvmhp_min_confidence=settings.lvmhp_min_confidence,
             cv_max_side=settings.mask_max_side,
             cv_mode=settings.skin_mode,
             cv_maha_threshold=settings.skin_maha_threshold,
@@ -278,6 +989,8 @@ def censor(
         "X-Skin-Backend-Requested": settings.skin_backend,
         "X-Skin-Backend-Used": used_backend,
     }
+    if used_backends:
+        headers["X-Skin-Backends-Used"] = ",".join(used_backends)
     if backend_error:
         safe = " ".join(str(backend_error).splitlines()).strip()
         safe = safe.encode("ascii", "replace").decode("ascii")
