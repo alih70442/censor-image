@@ -24,34 +24,8 @@ curl -sS http://localhost:8002/healthz
 
 ## Tuning
 
-If you place a human-parsing ONNX model at `models/schp.onnx`, the app will prefer it automatically (best separation of skin vs skin-colored clothing):
-
-- `SKIN_BACKEND=onnx_schp`
-- `SCHP_MODEL_PATH=models/schp.onnx` (default)
-- `SCHP_INPUT_SIZE=473`
-- `SCHP_SKIN_CLASS_IDS=13,14,15,16,17` (default assumes LIP labels: face/arms/legs)
-- `SCHP_MIN_CONFIDENCE=0.0`
-
-Otherwise, the Docker image bundles an offline ONNX model for skin/clothes/hair segmentation at build time and uses it at runtime:
-
-- `SKIN_BACKEND=onnx_smp` (default)
-- `SKIN_MODEL_PATH=models/skin_smp.onnx` (default)
-- `SKIN_SCORE_THRESHOLD=0.5`
-- `SKIN_CHANNEL_INDEX=0` (model output channel for “skin”)
-- `SKIN_REQUIRE_MAX=true` (only keep pixels where “skin” is the top class)
-- `SKIN_MARGIN=0.05` (require `skin_prob - max(other_probs)` to exceed this)
-
-Optional: also censor hair (ONNX backend only):
-
-- `CENSOR_HAIR=true` to enable by default (or pass `hair=true` to `POST /censor`)
-- `HAIR_CHANNEL_INDEX=2` (model output channel for “hair”)
-- `HAIR_SCORE_THRESHOLD=0.5`
-- `HAIR_REQUIRE_MAX=true`
-- `HAIR_MARGIN=0.05`
-
-If you need a fully local build without downloading during `docker build`, set `SKIN_BACKEND=cv` and rebuild (lower quality).
-
-CV fallback (used when `SKIN_BACKEND=cv` or ONNX fails):
+This build uses CV-only skin detection (no ONNX backends).
+Hair censoring is not supported.
 
 - `SKIN_MODE=auto` (default)
 - `SKIN_MODE=adaptive`
@@ -65,8 +39,7 @@ If skin detection is too aggressive (censors clothing), reduce expansion:
 ## Troubleshooting
 
 - If you get `Missing boundary in multipart`, don’t manually set `Content-Type`; let your HTTP client set it for `multipart/form-data`.
-- If `POST /mask` looks wrong, try adjusting `SKIN_SCORE_THRESHOLD` (lower = more skin) or `SKIN_MARGIN` (higher = less clothing false positives).
-- If skin-colored clothing is being censored, use the `onnx_schp` backend with a human-parsing model (it builds the mask from body-part classes instead of color/texture).
+- If skin detection is too aggressive, lower `SKIN_MAHA_THRESHOLD` (more conservative).
 
 ## Endpoints
 
@@ -77,18 +50,15 @@ If skin detection is too aggressive (censors clothing), reduce expansion:
 
 Both `POST /mask` and `POST /censor` include:
 
-- `X-Skin-Backend-Requested`: configured backend (e.g. `onnx_schp`)
-- `X-Skin-Backend-Used`: backend actually used after fallback (e.g. `onnx_smp`, `cv`)
-- `X-Skin-Backend-Error`: reason for fallback (only present when a fallback happened)
-
-For `onnx_schp`, the server auto-detects the model’s fixed input resolution from the ONNX graph (e.g. 512×512) and will resize accordingly.
+- `X-Skin-Backend-Requested`: always `cv`
+- `X-Skin-Backend-Used`: always `cv`
 
 ## Examples
 
 Blur (PNG/JPEG/WebP input):
 
 ```bash
-curl -sS -X POST "http://localhost:8002/censor?method=blur&sigma=12&feather=6&hair=true" \
+curl -sS -X POST "http://localhost:8002/censor?method=blur&sigma=12&feather=6" \
   -F "image=@input.png" \
   -o out.png
 ```

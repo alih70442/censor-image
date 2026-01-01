@@ -11,7 +11,7 @@ from PIL import Image, ImageColor, ImageOps
 
 from app.censor import CensorParams, apply_censor
 from app.settings import settings
-from app.skin import skin_hair_masks_onnx_smp, skin_mask_dispatch_info
+from app.skin import skin_mask
 
 app = FastAPI(title="Censor Image", version="0.1.0")
 
@@ -146,30 +146,22 @@ def mask(
     _ensure_supported(fmt)
 
     rgb, _alpha = _pil_to_rgb_array(img)
-    mask01, used_backend, backend_error = skin_mask_dispatch_info(
+    mask01 = skin_mask(
         rgb,
-        backend=settings.skin_backend,
-        model_path=settings.skin_model_path,
-        score_threshold=settings.skin_score_threshold,
-        skin_channel_index=settings.skin_channel_index,
-        require_max=settings.skin_require_max,
-        margin=settings.skin_margin,
+        max_side=settings.mask_max_side,
         min_area=settings.min_component_area,
-        schp_model_path=settings.schp_model_path,
-        schp_input_size=settings.schp_input_size,
-        schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
-        schp_min_confidence=settings.schp_min_confidence,
-        cv_max_side=settings.mask_max_side,
-        cv_mode=settings.skin_mode,
-        cv_maha_threshold=settings.skin_maha_threshold,
-        cv_min_seed_pixels=settings.skin_min_seed_pixels,
+        mode=settings.skin_mode,
+        threshold=settings.skin_maha_threshold,
+        min_seed_pixels=settings.skin_min_seed_pixels,
     )
+    used_backend = "cv"
+    backend_error = None
     mask_u8 = (np.clip(mask01, 0.0, 1.0) * 255).astype(np.uint8)
     mask_img = Image.fromarray(mask_u8, mode="L")
     out = io.BytesIO()
     mask_img.save(out, format="PNG", optimize=False)
     headers = {
-        "X-Skin-Backend-Requested": settings.skin_backend,
+        "X-Skin-Backend-Requested": "cv",
         "X-Skin-Backend-Used": used_backend,
     }
     if backend_error:
@@ -201,67 +193,22 @@ def censor(
         raise HTTPException(status_code=400, detail=f"Invalid color: {color}") from exc
 
     rgb, alpha = _pil_to_rgb_array(img)
-    use_hair = settings.censor_hair if hair is None else bool(hair)
-    used_backend: str
-
-    if use_hair and settings.skin_backend == "onnx_smp":
-        try:
-            skin01, hair01 = skin_hair_masks_onnx_smp(
-                rgb,
-                model_path=settings.skin_model_path,
-                skin_score_threshold=settings.skin_score_threshold,
-                skin_channel_index=settings.skin_channel_index,
-                skin_require_max=settings.skin_require_max,
-                skin_margin=settings.skin_margin,
-                skin_min_area=settings.min_component_area,
-                hair_score_threshold=settings.hair_score_threshold,
-                hair_channel_index=settings.hair_channel_index,
-                hair_require_max=settings.hair_require_max,
-                hair_margin=settings.hair_margin,
-                hair_min_area=settings.hair_min_component_area,
-            )
-            mask01 = np.maximum(skin01, hair01)
-            used_backend = "onnx_smp"
-            backend_error = None
-        except Exception:
-            skin01, used_backend, backend_error = skin_mask_dispatch_info(
-                rgb,
-                backend=settings.skin_backend,
-                model_path=settings.skin_model_path,
-                score_threshold=settings.skin_score_threshold,
-                skin_channel_index=settings.skin_channel_index,
-                require_max=settings.skin_require_max,
-                margin=settings.skin_margin,
-                min_area=settings.min_component_area,
-                schp_model_path=settings.schp_model_path,
-                schp_input_size=settings.schp_input_size,
-                schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
-                schp_min_confidence=settings.schp_min_confidence,
-                cv_max_side=settings.mask_max_side,
-                cv_mode=settings.skin_mode,
-                cv_maha_threshold=settings.skin_maha_threshold,
-                cv_min_seed_pixels=settings.skin_min_seed_pixels,
-            )
-            mask01 = skin01
-    else:
-        mask01, used_backend, backend_error = skin_mask_dispatch_info(
-            rgb,
-            backend=settings.skin_backend,
-            model_path=settings.skin_model_path,
-            score_threshold=settings.skin_score_threshold,
-            skin_channel_index=settings.skin_channel_index,
-            require_max=settings.skin_require_max,
-            margin=settings.skin_margin,
-            min_area=settings.min_component_area,
-            schp_model_path=settings.schp_model_path,
-            schp_input_size=settings.schp_input_size,
-            schp_skin_class_ids=tuple(settings.schp_skin_class_ids),
-            schp_min_confidence=settings.schp_min_confidence,
-            cv_max_side=settings.mask_max_side,
-            cv_mode=settings.skin_mode,
-            cv_maha_threshold=settings.skin_maha_threshold,
-            cv_min_seed_pixels=settings.skin_min_seed_pixels,
+    if hair:
+        raise HTTPException(
+            status_code=422,
+            detail="Hair censoring is not supported in the CV-only build.",
         )
+
+    mask01 = skin_mask(
+        rgb,
+        max_side=settings.mask_max_side,
+        min_area=settings.min_component_area,
+        mode=settings.skin_mode,
+        threshold=settings.skin_maha_threshold,
+        min_seed_pixels=settings.skin_min_seed_pixels,
+    )
+    used_backend = "cv"
+    backend_error = None
 
     params = CensorParams(
         method=method,
@@ -275,7 +222,7 @@ def censor(
     out_bytes = _encode_image(out_img, fmt)
 
     headers = {
-        "X-Skin-Backend-Requested": settings.skin_backend,
+        "X-Skin-Backend-Requested": "cv",
         "X-Skin-Backend-Used": used_backend,
     }
     if backend_error:
