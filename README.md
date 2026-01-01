@@ -24,7 +24,18 @@ curl -sS http://localhost:8002/healthz
 
 ## Tuning
 
-If you place a human-parsing ONNX model at `models/schp.onnx`, the app will prefer it automatically (best separation of skin vs skin-colored clothing):
+If you place an LV-MHP v2 (MHParsNet) ONNX model at `models/MHParsNet.onnx`, the app will prefer it automatically (best separation of skin vs skin-colored clothing by selecting body-part classes):
+
+- `SKIN_BACKEND=onnx_mhp`
+- `MHP_MODEL_PATH=models/MHParsNet_logits.onnx` (default)
+- `MHP_INPUT_SIZE=512`
+- `MHP_SKIN_CLASS_IDS=3,16,5,6,7,8,30,31` (recommended: face/torso/arms/hands/legs)
+- `MHP_MIN_CONFIDENCE=0.0`
+- `MHP_INPUT_NAME=image` and `MHP_OUTPUT_NAME=logits`
+- `MHP_INPUT_BGR=false`
+- `MHP_NORM_MEAN=123.675,116.28,103.53` and `MHP_NORM_STD=58.395,57.12,57.375` (0..255 scale; override if you have different `normal_file.json`)
+
+If you place an SCHP human-parsing ONNX model at `models/schp.onnx`, the app will prefer it next:
 
 - `SKIN_BACKEND=onnx_schp`
 - `SCHP_MODEL_PATH=models/schp.onnx` (default)

@@ -9,6 +9,7 @@ def _get_bool(name: str, default: bool) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
+
 def _get_int_list(name: str) -> list[int]:
     raw = os.getenv(name)
     if raw is None:
@@ -28,12 +29,47 @@ def _get_int_list(name: str) -> list[int]:
     return out
 
 
+def _get_float_list(name: str) -> list[float]:
+    raw = os.getenv(name)
+    if raw is None:
+        return []
+    raw = raw.strip()
+    if not raw:
+        return []
+    out: list[float] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a comma-separated list of floats (got {raw!r})") from exc
+    return out
+
+
 class Settings:
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "20"))
     strict_lossless: bool = _get_bool("STRICT_LOSSLESS", True)
     allow_lossy_jpeg: bool = _get_bool("ALLOW_LOSSY_JPEG", True)
     mask_max_side: int = int(os.getenv("MASK_MAX_SIDE", "640"))
     min_component_area: int = int(os.getenv("MIN_COMPONENT_AREA", "256"))
+
+    # LV-MHP v2 (MHParsNet-style) human parsing knobs (used only when SKIN_BACKEND=onnx_mhp).
+    _mhp_default_path: str = (
+        "models/MHParsNet_logits.onnx" if os.path.exists("models/MHParsNet_logits.onnx") else "models/MHParsNet.onnx"
+    )
+    mhp_model_path: str = os.getenv("MHP_MODEL_PATH", _mhp_default_path).strip()
+    mhp_input_size: int = int(os.getenv("MHP_INPUT_SIZE", "512"))
+    # Default assumes LV-MHP v2 59-class IDs (common: face/arms/hands/torso_skin/legs/feet).
+    mhp_skin_class_ids: list[int] = _get_int_list("MHP_SKIN_CLASS_IDS") or [3, 16, 5, 6, 7, 8, 30, 31]
+    mhp_min_confidence: float = float(os.getenv("MHP_MIN_CONFIDENCE", "0.0"))
+    mhp_input_name: str = os.getenv("MHP_INPUT_NAME", "image").strip()
+    mhp_output_name: str = os.getenv("MHP_OUTPUT_NAME", "logits").strip()
+    mhp_input_bgr: bool = _get_bool("MHP_INPUT_BGR", False)
+    # Mean/std are applied to float32 pixels in 0..255 scale, in RGB order by default.
+    mhp_norm_mean: list[float] = _get_float_list("MHP_NORM_MEAN") or [123.675, 116.28, 103.53]
+    mhp_norm_std: list[float] = _get_float_list("MHP_NORM_STD") or [58.395, 57.12, 57.375]
 
     # SCHP (human parsing) knobs (used only when SKIN_BACKEND=onnx_schp).
     schp_model_path: str = os.getenv("SCHP_MODEL_PATH", "models/schp.onnx").strip()
@@ -44,10 +80,16 @@ class Settings:
     schp_min_confidence: float = float(os.getenv("SCHP_MIN_CONFIDENCE", "0.0"))
 
     # Skin detection backends:
+    # - onnx_mhp: LV-MHP v2 / MHParsNet human parsing (requires MHP model)
     # - onnx_smp: ONNX Skin/Clothes/Hair segmentation (best quality offline)
     # - onnx_schp: ONNX human parsing (best separation of skin vs clothing, requires SCHP model)
     # - cv: classic CV heuristics (fallback)
-    _default_backend: str = "onnx_schp" if os.path.exists(schp_model_path) else "onnx_smp"
+    if os.path.exists(mhp_model_path):
+        _default_backend: str = "onnx_mhp"
+    elif os.path.exists(schp_model_path):
+        _default_backend = "onnx_schp"
+    else:
+        _default_backend = "onnx_smp"
     skin_backend: str = os.getenv("SKIN_BACKEND", _default_backend).strip().lower()
     skin_model_path: str = os.getenv("SKIN_MODEL_PATH", "models/skin_smp.onnx").strip()
     skin_score_threshold: float = float(os.getenv("SKIN_SCORE_THRESHOLD", "0.5"))

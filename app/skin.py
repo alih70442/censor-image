@@ -30,6 +30,7 @@ def _postprocess_mask(mask01: np.ndarray, min_area: int) -> np.ndarray:
             keep[labels == label] = 255
     return (keep > 0).astype(np.float32)
 
+
 def _letterbox_to_size(rgb: np.ndarray, *, target_h: int, target_w: int) -> tuple[np.ndarray, float, int, int]:
     """
     Resize to fit within (target_h x target_w) preserving aspect ratio, then pad.
@@ -383,6 +384,7 @@ def _smp_infer_logits(rgb: np.ndarray, *, model_path: str) -> tuple[np.ndarray, 
 
     return out, target_h, target_w
 
+
 def _schp_expected_hw(model_path: str) -> tuple[int | None, int | None]:
     session = _get_onnx_session(model_path)
     shape = session.get_inputs()[0].shape  # e.g. [1, 3, 512, 512]
@@ -414,6 +416,195 @@ def _schp_infer_logits(rgb_boxed: np.ndarray, *, model_path: str) -> np.ndarray:
     output_name = session.get_outputs()[0].name
     out = session.run([output_name], {input_name: x})[0]
     return np.array(out)
+
+
+def _mhp_expected_hw(model_path: str) -> tuple[int | None, int | None]:
+    session = _get_onnx_session(model_path)
+    shape = session.get_inputs()[0].shape  # e.g. [1, 3, 512, 512]
+    if not isinstance(shape, (list, tuple)) or len(shape) != 4:
+        return None, None
+    h = shape[2] if isinstance(shape[2], int) else None
+    w = shape[3] if isinstance(shape[3], int) else None
+    return h, w
+
+
+def _mhp_letterbox_square_then_resize(rgb: np.ndarray, *, size: int) -> tuple[np.ndarray, tuple[int, int, int, int, int]]:
+    """
+    LV-MHP export contract:
+      1) pad to square with black
+      2) resize square to (size x size)
+    Returns (rgb_square_resized, meta=(top, left, orig_h, orig_w, square_side)).
+    """
+    height, width = rgb.shape[:2]
+    s = int(max(height, width))
+    top = int((s - height) // 2)
+    left = int((s - width) // 2)
+    canvas = np.zeros((s, s, 3), dtype=np.uint8)
+    canvas[top : top + height, left : left + width] = rgb
+    canvas = cv2.resize(canvas, (int(size), int(size)), interpolation=cv2.INTER_LINEAR)
+    return canvas, (top, left, int(height), int(width), int(s))
+
+
+def _mhp_unletterbox_mask_to_original(
+    mask_square_size: np.ndarray,
+    *,
+    meta: tuple[int, int, int, int, int],
+) -> np.ndarray:
+    top, left, orig_h, orig_w, s = meta
+    mask_sq = cv2.resize(mask_square_size.astype(np.uint8), (int(s), int(s)), interpolation=cv2.INTER_NEAREST)
+    cropped = mask_sq[top : top + orig_h, left : left + orig_w]
+    if cropped.shape[:2] != (orig_h, orig_w):
+        raise RuntimeError("LV-MHP unletterbox produced wrong size")
+    return (cropped > 0).astype(np.float32)
+
+
+def _mhp_infer_output(
+    rgb_boxed: np.ndarray,
+    *,
+    model_path: str,
+    input_name: str,
+    output_name: str,
+    input_bgr: bool,
+    norm_mean: tuple[float, float, float],
+    norm_std: tuple[float, float, float],
+) -> np.ndarray:
+    """
+    Run LV-MHP/MHParsNet-style human-parsing model and return the most likely segmentation output.
+    The ONNX export may contain multiple outputs (e.g. parsing logits + edge logits).
+    """
+    session = _get_onnx_session(model_path)
+    sess_input_names = {i.name for i in session.get_inputs()}
+    actual_input_name = input_name if input_name in sess_input_names else session.get_inputs()[0].name
+
+    x = rgb_boxed.astype(np.float32)  # 0..255 scale
+    if bool(input_bgr):
+        x = x[:, :, ::-1]  # RGB -> BGR
+
+    mean = np.array(list(norm_mean), dtype=np.float32)
+    std = np.array(list(norm_std), dtype=np.float32)
+    if bool(input_bgr):
+        mean = mean[::-1]
+        std = std[::-1]
+    x = (x - mean) / std
+    x = x.transpose(2, 0, 1)[None, :, :, :].astype(np.float32)
+
+    sess_output_names = [o.name for o in session.get_outputs()]
+    if output_name and output_name in set(sess_output_names):
+        out = session.run([output_name], {actual_input_name: x})[0]
+        return np.array(out)
+
+    outs = session.run(sess_output_names, {actual_input_name: x})
+    arrs = [np.array(o) for o in outs]
+
+    candidates: list[np.ndarray] = []
+    for arr in arrs:
+        if arr.ndim in (2, 3, 4):
+            candidates.append(arr)
+    if not candidates:
+        raise RuntimeError(f"Unexpected LV-MHP model outputs: {[a.shape for a in arrs]}")
+
+    # Prefer higher-rank, larger tensors (logits tend to be [1,C,H,W]).
+    seg = max(candidates, key=lambda a: (int(a.ndim), int(a.size)))
+    return seg
+
+
+def skin_mask_onnx_mhp(
+    rgb: np.ndarray,
+    *,
+    model_path: str,
+    input_size: int,
+    skin_class_ids: tuple[int, ...],
+    min_confidence: float,
+    min_area: int,
+    input_name: str,
+    output_name: str,
+    input_bgr: bool,
+    norm_mean: tuple[float, float, float],
+    norm_std: tuple[float, float, float],
+) -> np.ndarray:
+    """
+    LV-MHP v2 (MHParsNet-style) human parsing backend.
+    Builds a binary "skin" mask by selecting semantic classes that represent exposed skin
+    (typically face/arms/legs).
+    """
+    if rgb.dtype != np.uint8:
+        raise ValueError("rgb must be uint8")
+
+    expected_h, expected_w = _mhp_expected_hw(model_path)
+    if expected_h is not None and expected_w is not None:
+        target_h, target_w = int(expected_h), int(expected_w)
+    else:
+        input_size = int(input_size)
+        if input_size <= 0:
+            raise ValueError("input_size must be > 0")
+        target_h, target_w = input_size, input_size
+
+    skin_class_ids = tuple(int(i) for i in skin_class_ids)
+    if not skin_class_ids:
+        raise ValueError("skin_class_ids must not be empty")
+    if len(norm_mean) != 3 or len(norm_std) != 3:
+        raise ValueError("norm_mean and norm_std must have 3 floats (RGB order)")
+
+    height, width = rgb.shape[:2]
+    boxed, meta = _mhp_letterbox_square_then_resize(rgb, size=target_h)
+    out = _mhp_infer_output(
+        boxed,
+        model_path=model_path,
+        input_name=input_name,
+        output_name=output_name,
+        input_bgr=input_bgr,
+        norm_mean=norm_mean,
+        norm_std=norm_std,
+    )
+
+    if out.ndim == 4:
+        out = out[0]
+
+    if out.ndim == 3:
+        if out.shape[0] == 1 and out.dtype.kind in {"i", "u"}:
+            pred = out[0].astype(np.int32)
+            if pred.shape != (target_h, target_w):
+                pred = cv2.resize(pred, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            mask = np.isin(pred, np.array(skin_class_ids, dtype=np.int32))
+            mask01_square = mask.astype(np.float32)
+        else:
+            # Accept either [C,H,W] or [H,W,C].
+            if out.shape[0] == target_h and out.shape[1] == target_w and out.shape[2] <= 256:
+                logits = out.transpose(2, 0, 1)
+            else:
+                logits = out
+
+            if logits.shape[1:] != (target_h, target_w):
+                logits = cv2.resize(
+                    logits.transpose(1, 2, 0),
+                    (target_w, target_h),
+                    interpolation=cv2.INTER_LINEAR,
+                ).transpose(2, 0, 1)
+
+            pred = np.argmax(logits, axis=0).astype(np.int32)
+            mask = np.isin(pred, np.array(skin_class_ids, dtype=np.int32))
+
+            min_confidence = float(min_confidence)
+            if min_confidence > 0.0:
+                shifted = logits.astype(np.float32) - np.max(logits.astype(np.float32), axis=0, keepdims=True)
+                exp = np.exp(shifted)
+                denom = np.sum(exp, axis=0)
+                maxexp = np.max(exp, axis=0)
+                conf = (maxexp / np.maximum(denom, 1e-8)).astype(np.float32)
+                mask &= conf >= min_confidence
+
+            mask01_square = mask.astype(np.float32)
+    elif out.ndim == 2:
+        pred = out.astype(np.int32)
+        if pred.shape != (target_h, target_w):
+            pred = cv2.resize(pred, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+        mask = np.isin(pred, np.array(skin_class_ids, dtype=np.int32))
+        mask01_square = mask.astype(np.float32)
+    else:
+        raise RuntimeError(f"Unexpected LV-MHP model output shape: {out.shape}")
+
+    mask01 = _mhp_unletterbox_mask_to_original(mask01_square, meta=meta)
+    return _postprocess_mask(mask01, min_area=min_area)
 
 
 def skin_mask_onnx_schp(
@@ -665,6 +856,15 @@ def skin_mask_dispatch(
     require_max: bool,
     margin: float,
     min_area: int,
+    mhp_model_path: str = "models/MHParsNet_logits.onnx",
+    mhp_input_size: int = 512,
+    mhp_skin_class_ids: tuple[int, ...] = (3, 16, 5, 6, 7, 8, 30, 31),
+    mhp_min_confidence: float = 0.0,
+    mhp_input_name: str = "image",
+    mhp_output_name: str = "logits",
+    mhp_input_bgr: bool = False,
+    mhp_norm_mean: tuple[float, float, float] = (123.675, 116.28, 103.53),
+    mhp_norm_std: tuple[float, float, float] = (58.395, 57.12, 57.375),
     schp_model_path: str = "models/schp.onnx",
     schp_input_size: int = 473,
     schp_skin_class_ids: tuple[int, ...] = (13, 14, 15, 16, 17),
@@ -683,6 +883,15 @@ def skin_mask_dispatch(
         require_max=require_max,
         margin=margin,
         min_area=min_area,
+        mhp_model_path=mhp_model_path,
+        mhp_input_size=mhp_input_size,
+        mhp_skin_class_ids=mhp_skin_class_ids,
+        mhp_min_confidence=mhp_min_confidence,
+        mhp_input_name=mhp_input_name,
+        mhp_output_name=mhp_output_name,
+        mhp_input_bgr=mhp_input_bgr,
+        mhp_norm_mean=mhp_norm_mean,
+        mhp_norm_std=mhp_norm_std,
         schp_model_path=schp_model_path,
         schp_input_size=schp_input_size,
         schp_skin_class_ids=schp_skin_class_ids,
@@ -705,6 +914,15 @@ def skin_mask_dispatch_info(
     require_max: bool,
     margin: float,
     min_area: int,
+    mhp_model_path: str = "models/MHParsNet_logits.onnx",
+    mhp_input_size: int = 512,
+    mhp_skin_class_ids: tuple[int, ...] = (3, 16, 5, 6, 7, 8, 30, 31),
+    mhp_min_confidence: float = 0.0,
+    mhp_input_name: str = "image",
+    mhp_output_name: str = "logits",
+    mhp_input_bgr: bool = False,
+    mhp_norm_mean: tuple[float, float, float] = (123.675, 116.28, 103.53),
+    mhp_norm_std: tuple[float, float, float] = (58.395, 57.12, 57.375),
     schp_model_path: str = "models/schp.onnx",
     schp_input_size: int = 473,
     schp_skin_class_ids: tuple[int, ...] = (13, 14, 15, 16, 17),
@@ -716,6 +934,29 @@ def skin_mask_dispatch_info(
 ) -> tuple[np.ndarray, str, str | None]:
     fallback_error: str | None = None
     backend = (backend or "").strip().lower()
+    if backend == "onnx_mhp":
+        try:
+            return (
+                skin_mask_onnx_mhp(
+                    rgb,
+                    model_path=mhp_model_path,
+                    input_size=mhp_input_size,
+                    skin_class_ids=mhp_skin_class_ids,
+                    min_confidence=mhp_min_confidence,
+                    min_area=min_area,
+                    input_name=mhp_input_name,
+                    output_name=mhp_output_name,
+                    input_bgr=mhp_input_bgr,
+                    norm_mean=mhp_norm_mean,
+                    norm_std=mhp_norm_std,
+                ),
+                "onnx_mhp",
+                None,
+            )
+        except Exception as exc:
+            fallback_error = f"onnx_mhp failed: {type(exc).__name__}: {exc}"
+            backend = "onnx_schp"
+
     if backend == "onnx_schp":
         try:
             return (

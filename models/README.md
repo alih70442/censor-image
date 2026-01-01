@@ -4,6 +4,17 @@ This service can run fully offline once the ONNX model files are present in `mod
 
 ## Supported backends
 
+### `onnx_mhp` (LV-MHP v2 / MHParsNet human parsing)
+
+Place your LV-MHP v2 ONNX export at:
+
+- `models/MHParsNet.onnx`
+- `models/MHParsNet_logits.onnx` (recommended)
+
+This backend builds a skin mask from selected body-part classes (e.g. face/arms/legs).
+Configure which classes count as “skin” via `MHP_SKIN_CLASS_IDS`.
+If your ONNX export has fixed I/O names, set `MHP_INPUT_NAME`/`MHP_OUTPUT_NAME` accordingly (commonly `image`/`logits`).
+
 ### `onnx_schp` (human parsing)
 
 Place an SCHP human-parsing ONNX model at:
