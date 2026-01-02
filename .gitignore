@@ -4,3 +4,4 @@ models/*.tar.gz
 .env
 models/*.onnx
 models/*.data
+checkpoints

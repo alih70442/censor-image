@@ -11,3 +11,6 @@
 # expectations
 
 - It should detect the skin in the best possible quality.
+- if you have any question, ask it before start coding.
+- all human parts detected skin should be censored (face, torso-skin, hands, feet), also hair should censored.
+- the quality and accuracy of skin detection has high priority.
