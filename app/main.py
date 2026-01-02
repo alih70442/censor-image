@@ -10,8 +10,9 @@ from fastapi.responses import Response
 from PIL import Image, ImageColor, ImageOps
 
 from app.censor import CensorParams, apply_censor
+from app.schp_onnx import get_dataset_spec, get_palette, parse_schp_onnx
 from app.settings import settings
-from app.skin import skin_mask
+from app.skin import skin_mask_with_meta
 
 app = FastAPI(title="Censor Image", version="0.1.0")
 
@@ -138,6 +139,7 @@ def healthz() -> dict[str, str]:
 
 @app.post("/mask")
 def mask(
+    hair: bool | None = None,
     image: UploadFile = File(...),
 ) -> Response:
     data = _read_upload_bytes(image)
@@ -146,26 +148,42 @@ def mask(
     _ensure_supported(fmt)
 
     rgb, _alpha = _pil_to_rgb_array(img)
-    mask01 = skin_mask(
+    include_hair = settings.censor_hair if hair is None else bool(hair)
+    res = skin_mask_with_meta(
         rgb,
         max_side=settings.mask_max_side,
         min_area=settings.min_component_area,
+        backend=settings.skin_backend,
         mode=settings.skin_mode,
         threshold=settings.skin_maha_threshold,
         min_seed_pixels=settings.skin_min_seed_pixels,
+        include_hair=include_hair,
+        schp_model_path=settings.schp_model_path,
+        schp_dataset=settings.schp_dataset,
+        schp_expand_skin=settings.schp_expand_skin,
+        schp_max_expand_px=settings.schp_max_expand_px,
+        schp_intra_threads=settings.schp_intra_threads,
+        schp_inter_threads=settings.schp_inter_threads,
+        mhp_d2_config=settings.mhp_d2_config,
+        mhp_d2_weights=settings.mhp_d2_weights,
+        mhp_d2_score_thresh=settings.mhp_d2_score_thresh,
+        mhp_d2_max_people=settings.mhp_d2_max_people,
+        mhp_d2_person_class_id=settings.mhp_d2_person_class_id,
+        mhp_bbox_expand_ratio=settings.mhp_bbox_expand_ratio,
     )
-    used_backend = "cv"
-    backend_error = None
+    mask01 = res.mask01
     mask_u8 = (np.clip(mask01, 0.0, 1.0) * 255).astype(np.uint8)
     mask_img = Image.fromarray(mask_u8, mode="L")
     out = io.BytesIO()
     mask_img.save(out, format="PNG", optimize=False)
     headers = {
-        "X-Skin-Backend-Requested": "cv",
-        "X-Skin-Backend-Used": used_backend,
+        "X-Skin-Backend-Requested": res.backend_requested,
+        "X-Skin-Backend-Used": res.backend_used,
     }
-    if backend_error:
-        safe = " ".join(str(backend_error).splitlines()).strip()
+    if res.schp_dataset:
+        headers["X-SCHP-Dataset"] = res.schp_dataset
+    if res.backend_error:
+        safe = " ".join(str(res.backend_error).splitlines()).strip()
         safe = safe.encode("ascii", "replace").decode("ascii")
         headers["X-Skin-Backend-Error"] = safe[:800]
     return Response(content=out.getvalue(), media_type="image/png", headers=headers)
@@ -193,22 +211,31 @@ def censor(
         raise HTTPException(status_code=400, detail=f"Invalid color: {color}") from exc
 
     rgb, alpha = _pil_to_rgb_array(img)
-    if hair:
-        raise HTTPException(
-            status_code=422,
-            detail="Hair censoring is not supported in the CV-only build.",
-        )
+    include_hair = settings.censor_hair if hair is None else bool(hair)
 
-    mask01 = skin_mask(
+    res = skin_mask_with_meta(
         rgb,
         max_side=settings.mask_max_side,
         min_area=settings.min_component_area,
+        backend=settings.skin_backend,
         mode=settings.skin_mode,
         threshold=settings.skin_maha_threshold,
         min_seed_pixels=settings.skin_min_seed_pixels,
+        include_hair=include_hair,
+        schp_model_path=settings.schp_model_path,
+        schp_dataset=settings.schp_dataset,
+        schp_expand_skin=settings.schp_expand_skin,
+        schp_max_expand_px=settings.schp_max_expand_px,
+        schp_intra_threads=settings.schp_intra_threads,
+        schp_inter_threads=settings.schp_inter_threads,
+        mhp_d2_config=settings.mhp_d2_config,
+        mhp_d2_weights=settings.mhp_d2_weights,
+        mhp_d2_score_thresh=settings.mhp_d2_score_thresh,
+        mhp_d2_max_people=settings.mhp_d2_max_people,
+        mhp_d2_person_class_id=settings.mhp_d2_person_class_id,
+        mhp_bbox_expand_ratio=settings.mhp_bbox_expand_ratio,
     )
-    used_backend = "cv"
-    backend_error = None
+    mask01 = res.mask01
 
     params = CensorParams(
         method=method,
@@ -222,11 +249,50 @@ def censor(
     out_bytes = _encode_image(out_img, fmt)
 
     headers = {
-        "X-Skin-Backend-Requested": "cv",
-        "X-Skin-Backend-Used": used_backend,
+        "X-Skin-Backend-Requested": res.backend_requested,
+        "X-Skin-Backend-Used": res.backend_used,
     }
-    if backend_error:
-        safe = " ".join(str(backend_error).splitlines()).strip()
+    if res.schp_dataset:
+        headers["X-SCHP-Dataset"] = res.schp_dataset
+    if res.backend_error:
+        safe = " ".join(str(res.backend_error).splitlines()).strip()
         safe = safe.encode("ascii", "replace").decode("ascii")
         headers["X-Skin-Backend-Error"] = safe[:800]
     return Response(content=out_bytes, media_type=_content_type_for(fmt), headers=headers)
+
+
+@app.get("/parts/labels")
+def parts_labels(dataset: str | None = None) -> dict[str, object]:
+    spec = get_dataset_spec(dataset or settings.schp_dataset)
+    return {"dataset": spec.name, "labels": list(spec.labels)}
+
+
+@app.post("/parts")
+def parts(image: UploadFile = File(...)) -> Response:
+    data = _read_upload_bytes(image)
+    img = _open_image(data)
+    fmt = _detect_input_format(image, img)
+    _ensure_supported(fmt)
+
+    rgb, _alpha = _pil_to_rgb_array(img)
+    try:
+        parsing, spec = parse_schp_onnx(
+            rgb,
+            model_path=settings.schp_model_path,
+            dataset=settings.schp_dataset,
+            intra_threads=settings.schp_intra_threads,
+            inter_threads=settings.schp_inter_threads,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"SCHP parsing failed: {exc}") from exc
+
+    palette = get_palette(spec.num_classes)
+    parsing_img = Image.fromarray(parsing, mode="P")
+    parsing_img.putpalette(palette)
+    out = io.BytesIO()
+    parsing_img.save(out, format="PNG", optimize=False)
+    headers = {
+        "X-Parts-Backend-Used": "schp-onnx",
+        "X-SCHP-Dataset": spec.name,
+    }
+    return Response(content=out.getvalue(), media_type="image/png", headers=headers)

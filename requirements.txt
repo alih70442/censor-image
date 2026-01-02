@@ -3,4 +3,5 @@ uvicorn[standard]==0.34.0
 pillow==11.0.0
 numpy==1.26.4
 opencv-python-headless==4.10.0.84
+onnxruntime==1.17.3
 python-multipart==0.0.9

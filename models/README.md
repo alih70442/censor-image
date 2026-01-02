@@ -1,5 +1,12 @@
 # Models
 
-The current service implementation is CV-only and does not load ONNX model files.
+The service can load SCHP (Self-Correction Human Parsing) ONNX models from this folder when `SKIN_BACKEND=schp` (default).
 
-This folder is kept for legacy/reference and can be removed if you don't need it.
+Default:
+
+- `SCHP_MODEL_PATH=models/schp_lip.onnx`
+
+Notes:
+
+- `schp_lip.onnx` uses external weights in `schp_lip.onnx.data`; keep both files together.
+- You can replace the ONNX file(s) and point `SCHP_MODEL_PATH` to any local ONNX model compatible with `SCHP_DATASET`.
